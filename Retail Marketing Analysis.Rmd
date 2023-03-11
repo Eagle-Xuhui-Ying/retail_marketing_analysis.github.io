@@ -1,0 +1,972 @@
+---
+title: "Project 3 Retail Marketing"
+author: "Xuhui Ying"
+date: "11/15/2022"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+  html_document:
+    toc: yes
+    toc_depth: 3
+    theme: paper
+    highlight: tango
+    df_print: paged
+---
+
+## Load Libraries 
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+options(warn = -1)
+options(scipen = 999) # turns off scientific notation
+library(tidyverse)
+library(tidymodels)
+library(dplyr)
+library(janitor)
+library(skimr)
+library(modelr)
+library(GGally)
+library(kableExtra) # make nice looking results when we knit
+library(vip)        # variable importance
+library(fastshap)   # shapley values for variable importance 
+library(MASS)
+library(tree)
+library(ggplot2)
+library(factoextra)
+library(rpart.plot) # plotting decision trees
+```
+
+## Load Data & Deal with Missing Values
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+retail <- read_csv("marketing_campaign-1.csv") %>% clean_names()
+
+new_customers <- read_csv("new_customers_mkt.csv") %>% clean_names()
+
+head(retail)
+
+skim(retail)
+
+retail$income[is.na(retail$income)]<-median(retail$income,na.rm=TRUE)
+
+```
+
+## Import Data
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+retail$response <- as.factor(retail$response)
+
+retail_summary <- retail %>%
+  count(response) %>%
+  mutate(pct = n/sum(n))
+
+retail_summary %>%
+  ggplot(aes(x=response, y=pct, fill=response)) +
+  geom_col() +
+  geom_text(aes(x=factor(response),y=pct+0.034, label = round(pct,2)), vjust = 2.5, colour = "white") +
+  labs(title = "Accepted the Offer or Not")
+
+retail %>%
+  group_by(response) %>%
+  summarize(n=n()) %>%
+  ungroup() %>%
+  mutate(pct = n/sum(n))
+
+retail <- retail %>% mutate(cmp1 = as.character(cmp1))
+retail <- retail %>% mutate(cmp2 = as.character(cmp2))
+retail <- retail %>% mutate(cmp3 = as.character(cmp2))
+retail <- retail %>% mutate(cmp4 = as.character(cmp2))
+retail <- retail %>% mutate(cmp5 = as.character(cmp2))
+retail <- retail %>% mutate(cmplain = as.character(cmplain))
+```
+
+## Explore Numerics
+
+numeric variables: birth, income, kids, teens, recency, wines, fruits, meat, fish, sweets, gold, deals, web, catalog, store, visits, z_cost, z_rev
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+
+retail_numerics <- retail %>% mutate(age = 2022 - birth)
+
+# -- comparative boxplots
+
+boxplot <- function(m){
+    ggplot(retail_numerics, aes(x=!!as.name(m), y=as.factor(response), fill=as.factor(response))) + 
+    geom_boxplot() +
+    labs(title = as.character(m), y = 'response or not') +
+    theme(legend.title = element_blank()) 
+}
+
+numerics <- c('age', 'income', 'kids', 'teens', 'recency', 'wines', 'fruits', 'meat', 'fish', 'sweets', 'gold', 'deals', 'web', 'catalog', 'store', 'visits', 'z_cost', 'z_rev')
+
+for (c in numerics){
+    print(boxplot(c))
+}
+
+```
+
+## Explore Character Variables
+
+categorical variables: education, mar_stat, cmp1, cmp2, cmp3, cmp4, cmp5, cmplain
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+
+char_fill <- function(col){
+    retail %>%
+    na.omit() %>%
+    ggplot(aes(!!as.name(col), fill = as.factor(response))) + 
+    geom_bar(position = 'fill') +
+    coord_flip() +
+    labs(y = 'proportion') +
+    theme(legend.title = element_blank())
+}
+
+dummy <- c('education', 'mar_stat', 'cmp1', 'cmp2', 'cmp3', 'cmp4', 'cmp5', 'cmplain')
+
+# -- for each character column, create a chart
+for (column in dummy){
+    print(char_fill(column))
+}
+
+```
+
+# create clusters
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+
+clusters <- retail
+
+# create dummy variables for gender and promotional class
+
+clusters$phd <- ifelse(clusters$education == 'PhD', 1, 0)
+clusters$master <- ifelse(clusters$education == 'Master', 1, 0)
+clusters$graduation <- ifelse(clusters$education == 'Graduation', 1, 0)
+clusters$basic <- ifelse(clusters$education == 'Basic', 1, 0)
+clusters$X2nCycle <- ifelse(clusters$education == '2nCycle', 1, 0)
+
+clusters$yolo <- ifelse(clusters$mar_stat == 'YOLO', 1, 0)
+clusters$widow <- ifelse(clusters$mar_stat == 'Widow', 1, 0)
+clusters$single <- ifelse(clusters$mar_stat == 'Single', 1, 0)
+clusters$partner <- ifelse(clusters$mar_stat == 'Partner', 1, 0)
+clusters$married <- ifelse(clusters$mar_stat == 'Married', 1, 0)
+clusters$divorce <- ifelse(clusters$mar_stat == 'Divorce', 1, 0)
+clusters$alone <- ifelse(clusters$mar_stat == 'Alone', 1, 0)
+clusters$absurd <- ifelse(clusters$mar_stat == 'Absurd', 1, 0)
+
+clusters$cmp1 <- as.numeric(clusters$cmp1)
+clusters$cmp2 <- as.numeric(clusters$cmp2)
+clusters$cmp3 <- as.numeric(clusters$cmp3)
+clusters$cmp4 <- as.numeric(clusters$cmp4)
+clusters$cmp5 <- as.numeric(clusters$cmp5)
+clusters$cmplain <- as.numeric(clusters$cmplain)
+
+#standardize numeric variables
+
+clusters$birth <- scale(clusters$birth)
+clusters$income <- scale(clusters$income)
+clusters$kids <- scale(clusters$kids)
+clusters$teens <- scale(clusters$teens)
+clusters$recency <- scale(clusters$recency)
+clusters$wines <- scale(clusters$wines)
+clusters$fruits <- scale(clusters$fruits)
+clusters$meat <- scale(clusters$meat)
+clusters$fish <- scale(clusters$fish)
+clusters$sweets <- scale(clusters$sweets)
+clusters$gold <- scale(clusters$gold)
+clusters$deals <- scale(clusters$deals)
+clusters$web <- scale(clusters$web)
+clusters$catalog <- scale(clusters$catalog)
+clusters$store <- scale(clusters$store)
+clusters$visits <- scale(clusters$visits)
+
+clusters %>% skim()
+
+# remove redundant and rejected variables
+retail_clusters = subset(clusters, select= -c(id, dt_customer, z_cost, z_rev, education, mar_stat, response)) 
+                                    
+head(retail_clusters)
+
+skim(retail_clusters)
+
+```
+
+# visually choose number of clusters (Elbow Plot)
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+# how many clusters
+
+fviz_nbclust(retail_clusters, kmeans, method="wss")
+```
+
+# build clusters
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+set.seed(1234)
+
+clusters5 <- kmeans(retail_clusters, 5, iter.max = 200, nstart = 5)
+print(clusters5)
+
+# visualize clusters
+
+fviz_cluster(clusters5,retail_clusters,ellipse.type="norm",geom="point")
+
+```
+
+# explore clusters
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+cluster <- as.factor(clusters5$cluster)
+
+clusters5
+
+#determine which variables are driving the cluster creation
+
+tree.clusters=tree(cluster~.,retail_clusters)
+
+summary(tree.clusters)
+plot(tree.clusters)
+text(tree.clusters,pretty=0)
+tree.clusters
+```
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+ggplot(retail,aes(cluster))+geom_bar()
+
+ggplot(retail,aes(x=birth))+geom_histogram(binwidth=10)+theme(axis.text.x=element_text(angle=45, hjust=1))
+ggplot(retail,aes(x=birth))+geom_histogram(binwidth=10)+facet_wrap(~clusters5$cluster)+theme(axis.text.x=element_text(angle=45, hjust=1))
+
+ggplot(retail,aes(x=income))+geom_histogram(binwidth=10000)
+ggplot(retail,aes(x=income))+geom_histogram(binwidth=10000) + facet_wrap(~clusters5$cluster)
+
+ggplot(retail,aes(education))+geom_bar()+theme(axis.text.x=element_text(angle=45, hjust=1))
+ggplot(retail,aes(education))+geom_bar()+facet_wrap(~clusters5$cluster)+theme(axis.text.x=element_text(angle=45, hjust=1))
+
+ggplot(retail,aes(mar_stat))+geom_bar()+theme(axis.text.x=element_text(angle=45, hjust=1))
+ggplot(retail,aes(mar_stat))+geom_bar()+facet_wrap(~clusters5$cluster)+theme(axis.text.x=element_text(angle=45, hjust=1))
+
+ggplot(retail,aes(kids))+geom_bar()
+ggplot(retail,aes(kids))+geom_bar()+facet_wrap(~clusters5$cluster)
+
+ggplot(retail,aes(teens))+geom_bar()
+ggplot(retail,aes(teens))+geom_bar()+facet_wrap(~clusters5$cluster)
+
+ggplot(retail,aes(wines))+geom_histogram(binwidth=50)
+ggplot(retail,aes(wines))+geom_histogram(binwidth=50)+facet_wrap(~clusters5$cluster)
+
+ggplot(retail,aes(fruits))+geom_histogram(binwidth=10)
+ggplot(retail,aes(fruits))+geom_histogram(binwidth=10)+facet_wrap(~clusters5$cluster)
+
+ggplot(retail,aes(meat))+geom_histogram(binwidth=50)
+ggplot(retail,aes(meat))+geom_histogram(binwidth=50)+facet_wrap(~clusters5$cluster)
+
+ggplot(retail,aes(fish))+geom_histogram(binwidth=10)
+ggplot(retail,aes(fish))+geom_histogram(binwidth=10)+facet_wrap(~clusters5$cluster)
+
+ggplot(retail,aes(sweets))+geom_histogram(binwidth=20)
+ggplot(retail,aes(sweets))+geom_histogram(binwidth=20)+facet_wrap(~clusters5$cluster)
+
+ggplot(retail,aes(gold))+geom_histogram(binwidth=20)
+ggplot(retail,aes(gold))+geom_histogram(binwidth=20)+facet_wrap(~clusters5$cluster)
+
+ggplot(retail,aes(deals))+geom_bar()
+ggplot(retail,aes(deals))+geom_bar()+facet_wrap(~clusters5$cluster)
+
+ggplot(retail,aes(web))+geom_bar()
+ggplot(retail,aes(web))+geom_bar()+facet_wrap(~clusters5$cluster)
+
+ggplot(retail,aes(catalog))+geom_bar()
+ggplot(retail,aes(catalog))+geom_bar()+facet_wrap(~clusters5$cluster)
+
+ggplot(retail,aes(store))+geom_bar()
+ggplot(retail,aes(store))+geom_bar()+facet_wrap(~clusters5$cluster)
+
+ggplot(retail,aes(visits))+geom_bar()
+ggplot(retail,aes(visits))+geom_bar()+facet_wrap(~clusters5$cluster)
+
+ggplot(retail,aes(cmp1))+geom_bar()
+ggplot(retail,aes(cmp1))+geom_bar()+facet_wrap(~clusters5$cluster)
+
+ggplot(retail,aes(cmp2))+geom_bar()
+ggplot(retail,aes(cmp2))+geom_bar()+facet_wrap(~clusters5$cluster)
+
+ggplot(retail,aes(cmp3))+geom_bar()
+ggplot(retail,aes(cmp3))+geom_bar()+facet_wrap(~clusters5$cluster)
+
+ggplot(retail,aes(cmp4))+geom_bar()
+ggplot(retail,aes(cmp4))+geom_bar()+facet_wrap(~clusters5$cluster)
+
+ggplot(retail,aes(cmp5))+geom_bar()
+ggplot(retail,aes(cmp5))+geom_bar()+facet_wrap(~clusters5$cluster)
+
+ggplot(retail,aes(cmplain))+geom_bar()
+ggplot(retail,aes(cmplain))+geom_bar()+facet_wrap(~clusters5$cluster)
+
+```
+
+# Data Transformation
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+data <- retail %>% mutate(age = 2022 - birth) %>% dplyr::select(-id, -birth, -dt_customer, -z_cost, -z_rev) %>% mutate_if(is.character, factor)
+
+head(data)
+```
+
+## Partition my Data into 70/30 train/test split
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+set.seed(1234)
+
+# -- performs our train / test split 
+split <- initial_split(data, prop = 0.7)
+
+# -- extract the training data form our banana split 
+train <- training(split)
+# -- extract the test data 
+test <- testing(split)
+
+sprintf("Train PCT : %1.2f%%", nrow(train)/ nrow(data) * 100)
+sprintf("Test  PCT : %1.2f%%", nrow(test)/ nrow(data) * 100)
+```
+
+## Recipe
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+# -- create our recipe -- 
+data_recipe <- recipe(response ~ ., data = train) %>%
+  step_impute_mode(all_nominal(), -all_outcomes()) %>%
+  step_impute_median(all_numeric()) %>%
+  step_dummy(all_nominal(), -all_outcomes()) %>%
+  prep()
+
+data_recipe
+```
+
+## Bake 
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+# -- apply the recipe 
+bake_train <- bake(data_recipe, new_data = train)
+bake_test  <- bake(data_recipe, new_data = test)
+```
+
+## Fit Logistic Regression Model
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+## logistic code is here for reference and comparison
+logistic_glm <-logistic_reg(mode = "classification") %>%
+                  set_engine("glm") %>%
+                  fit(response ~ ., data = train)
+
+## check out your parameter estimates ... 
+tidy(logistic_glm) %>%
+  mutate_at(c("estimate", "std.error", "statistic", "p.value"), round, 4)
+
+```
+
+## Prep for Evaluation 
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+
+# -- training 
+predict(logistic_glm, train, type = "prob") %>%
+  bind_cols(.,predict(logistic_glm, train)) %>%
+  bind_cols(.,train) -> scored_train_glm
+
+head(scored_train_glm)
+
+# -- testing 
+predict(logistic_glm, test, type = "prob") %>%
+  bind_cols(.,predict(logistic_glm, test)) %>%
+  bind_cols(.,test) -> scored_test_glm
+
+head(scored_test_glm)
+```
+
+## Evaluate Logistic Regression Model
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+
+options(yardstick.event_first = FALSE)
+
+# AUC: Train and Test 
+scored_train_glm %>% 
+  metrics(response, .pred_1, estimate = .pred_class) %>%
+  mutate(part="training") %>%
+  bind_rows(scored_test_glm %>% 
+               metrics(response, .pred_1, estimate = .pred_class) %>%
+               mutate(part="testing") 
+  ) %>%
+  filter(.metric %in% c("accuracy", "roc_auc"))
+
+# Variable Importance top 10 features  
+logistic_glm %>%
+  vi()
+
+logistic_glm %>%
+  vip(num_features = 10)
+
+# ROC Charts 
+scored_train_glm %>%
+  mutate(model = "train") %>%
+  bind_rows(scored_test_glm %>%
+              mutate(model="test")) %>%
+  group_by(model) %>%
+  roc_curve(response, .pred_1) %>%
+  autoplot()
+
+# Confusion Matrices  
+scored_train_glm %>%
+  conf_mat(response, .pred_class) %>%
+  autoplot(type = "heatmap") +
+  labs(title="Train Confusion Matrix")
+
+scored_test_glm %>%
+  conf_mat(response, .pred_class) %>%
+  autoplot(type = "heatmap") +
+  labs(title="Test Confusion Matrix")
+
+```
+
+# Reduced Model - backward elimination (stepAIC)
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+
+## Use stepwise selection to reduce the model
+
+steplog <- glm(response ~ ., data = bake_train, family=binomial(link="logit"))
+step <- stepAIC(steplog, direction="both")
+summary(step)
+
+```
+
+## Use tidymodel framework to fit
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+
+uni_steprecipe <- recipe(response ~ teens + recency + wines + meat + gold + deals + web + store + visits + education + education + mar_stat + cmp3 + cmp1, data = train) %>%
+    step_impute_median(all_numeric()) %>%
+    prep()
+
+uni_steprecipe
+
+# apply new recipe 
+bake_steptrain <- bake(uni_steprecipe, new_data = train)
+bake_steptest  <- bake(uni_steprecipe, new_data = test)
+
+logistic_step <- logistic_reg(mode = "classification") %>%
+                  set_engine("glm") %>%
+                  fit(response ~ ., data = bake_steptrain)
+
+
+## check out your parameter estimates ...
+tidy(logistic_step) %>%
+  mutate_at(c("estimate", "std.error", "statistic", "p.value"), round, 4)
+
+```
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+# training predictions from stepwise model
+predict(logistic_step, bake_steptrain, type = "prob") %>%
+  bind_cols(.,predict(logistic_step, bake_steptrain)) %>%
+  bind_cols(.,bake_steptrain) -> scored_train_step
+
+head(scored_train_step)
+
+# testing predictions from stepwise model
+predict(logistic_step, bake_steptest, type = "prob") %>%
+  bind_cols(.,predict(logistic_step, bake_steptest)) %>%
+  bind_cols(.,bake_steptest) -> scored_test_step
+
+head(scored_test_step)
+```
+
+## Evaulate Reduced Regression Model
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+
+# Evaluate Stepwise Model
+# AUC: Train and Test 
+options(yardstick.event_first = FALSE)
+
+scored_train_step %>% 
+  metrics(response, .pred_1, estimate = .pred_class) %>%
+  mutate(part="training") %>%
+  bind_rows(scored_test_step %>% 
+               metrics(response, .pred_1, estimate = .pred_class) %>%
+               mutate(part="testing") 
+  ) %>%
+  filter(.metric %in% c("accuracy", "roc_auc"))
+
+model_glm <- glm(response ~ teens + recency + wines + meat + gold + deals + web + store + visits + education + education + mar_stat + cmp3 + cmp1, data = train, family=binomial(link="logit"))
+
+# Variable Importance top 10 features  
+model_glm %>%
+  vi()
+model_glm %>%
+  vip(num_features = 10)
+
+# ROC Charts 
+scored_train_step %>%
+  mutate(model = "train") %>%
+  bind_rows(scored_test_step %>%
+              mutate(model="test")) %>%
+  group_by(model) %>%
+  roc_curve(response, .pred_1) %>%
+  autoplot()
+
+
+# Confusion Matrices  
+scored_train_step %>%
+  conf_mat(response, .pred_class) %>%
+  autoplot(type = "heatmap") +
+  labs(title="Train Confusion Matrix")
+
+scored_test_step %>%
+  conf_mat(response, .pred_class) %>%
+  autoplot(type = "heatmap") +
+  labs(title="Test Confusion Matrix")
+
+```
+
+## Define Recipe & Bake
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+recipe <- recipe(response ~ teens + recency + wines + meat + gold + deals + web + store + visits + education + education + mar_stat + cmp3 + cmp1, data=train) %>%
+    step_impute_median(all_numeric_predictors()) %>%
+    step_unknown(all_nominal_predictors()) %>%
+    step_scale(all_numeric_predictors()) %>%
+    step_novel(all_nominal_predictors()) %>% # new factor levels 
+    step_dummy(all_nominal_predictors(), one_hot = TRUE) %>%
+    step_nzv(all_predictors()) %>%
+    prep()
+
+recipe
+
+bake(recipe %>% prep(), train, composition = "tibble") %>% head()
+
+bake_train <- bake(recipe, new_data = train)
+bake_test  <- bake(recipe, new_data = test)
+```
+
+## Define KNN Model
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+knn_model <- nearest_neighbor(neighbors = 7) %>%
+    set_mode("classification") %>%
+    set_engine("kknn")
+```
+
+## KNN Workflow
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+knn_workflow <- workflow() %>%
+    add_recipe(recipe) %>%
+    add_model(knn_model) %>%
+    fit(train)
+```
+
+## Score KNN model
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+# score training  
+scored_train_knn <- predict(knn_workflow, train, type="prob") %>%
+    bind_cols(predict(knn_workflow, train, type="class")) %>%
+    bind_cols(.,train) 
+# score testing 
+scored_test_knn <- predict(knn_workflow, test, type="prob") %>%
+    bind_cols(predict(knn_workflow, test, type="class")) %>%
+    bind_cols(.,test)
+```
+
+## Evaluate (KNN = 7)
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+
+options(yardstick.event_first = FALSE)
+# Metrics: Train and Test 
+scored_train_knn %>% 
+    metrics(response, .pred_1, estimate = .pred_class) %>%
+    mutate(part="training") %>%
+    bind_rows(scored_test_knn %>% 
+                 metrics(response, .pred_1, estimate = .pred_class) %>%
+                 mutate(part="testing") ) %>%
+    filter(.metric %in% c('accuracy','roc_auc')) %>%
+    pivot_wider(names_from = .metric, values_from=.estimate)
+
+# ROC Charts 
+scored_train_knn %>%
+  mutate(model = "train") %>%
+  bind_rows(scored_test_knn %>%
+              mutate(model="test")) %>%
+  group_by(model) %>%
+  roc_curve(response, .pred_1) %>%
+  autoplot()
+
+scored_train_knn %>%
+  conf_mat(response, .pred_class) %>%
+  autoplot(type = "heatmap") +
+  labs(title="Train Confusion Matrix")
+
+scored_test_knn %>%
+  conf_mat(response, .pred_class) %>%
+  autoplot(type = "heatmap") +
+  labs(title="Test Confusion Matrix")
+
+```
+
+## Define Decision Tree Model
+
+```{r}
+retail_tree <- decision_tree(mode="classification",
+                            cost_complexity = 0.001,
+                            tree_depth = 5,
+                            min_n = 100) %>%
+                  set_engine("rpart") %>%
+                  fit(response ~ ., data=bake_train)
+
+retail_tree$fit
+
+options(scipen = 0)
+
+rpart.plot(retail_tree$fit, roundint=FALSE, extra=3)
+```
+
+## Decision Tree Evaluation 
+
+```{r}
+
+# training 
+predict(retail_tree, bake_train, type = "prob") %>%
+  bind_cols(.,predict(retail_tree, bake_train)) %>%
+  bind_cols(.,bake_train) -> scored_train_tree
+
+head(scored_train_tree)
+
+# testing 
+predict(retail_tree, bake_test, type = "prob") %>%
+  bind_cols(.,predict(retail_tree, bake_test)) %>%
+  bind_cols(.,bake_test) -> scored_test_tree
+
+head(scored_test_tree)
+```
+
+## Decision Tree Evaluate
+
+```{r}
+
+# AUC: Train and Test 
+scored_train_tree %>% 
+  metrics(response, .pred_1, estimate = .pred_class) %>%
+  mutate(part="training") %>%
+  bind_rows( scored_test_tree %>% 
+               metrics(response, .pred_1, estimate = .pred_class) %>%
+               mutate(part="testing") 
+  ) 
+
+# Variable Importance top 10 features
+retail_tree %>%
+  vi()
+retail_tree %>%
+  vip(num_features = 10)
+
+# ROC Charts 
+scored_train_tree %>%
+  mutate(model = "train") %>%
+  bind_rows(scored_test_tree %>%
+              mutate(model="test")) %>%
+  group_by(model) %>%
+  roc_curve(response, .pred_1) %>%
+  autoplot()
+
+# Confusion Matrices  
+scored_train_tree %>%
+  conf_mat(response, .pred_class) %>%
+  autoplot(type = "heatmap") +
+  labs(title="Train Confusion Matrix")
+
+scored_test_tree %>%
+  conf_mat(response, .pred_class) %>%
+  autoplot( type = "heatmap") +
+  labs(title="Test Confusion Matrix")
+```
+
+## Define Random Forest Model
+
+```{r}
+rf_model <- rand_forest(trees=100, min_n = 10) %>%
+  set_mode("classification") %>%
+  set_engine("ranger", importance="impurity")
+```
+
+## Random Forest Workflow 
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+rf_workflow <- workflow() %>%
+  add_recipe(recipe) %>%
+  add_model(rf_model) %>%
+  fit(train)
+```
+
+## Score Random Forest Model
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+  # score training
+  predict(rf_workflow, train, type="prob") %>%
+    bind_cols(predict(rf_workflow, train, type="class")) %>%
+    bind_cols(., train) -> scored_train_rf
+
+  # score testing 
+  predict(rf_workflow, test, type="prob") %>%
+      bind_cols(predict(rf_workflow, test, type="class")) %>%
+      bind_cols(., test) -> scored_test_rf
+```
+
+## Evaluation (rf_model)
+  
+```{r, eval=TRUE, warning=FALSE, message=FALSE} 
+options(yardstick.event_first = FALSE)
+# Metrics: Train and Test 
+scored_train_rf %>% 
+    metrics(response, .pred_1, estimate = .pred_class) %>%
+    mutate(part="training") %>%
+    bind_rows(scored_test_knn %>% 
+                 metrics(response, .pred_1, estimate = .pred_class) %>%
+                 mutate(part="testing") ) %>%
+    filter(.metric %in% c('accuracy','roc_auc')) %>%
+    pivot_wider(names_from = .metric, values_from=.estimate)
+  
+# Variable Importance
+rf_workflow %>%
+  extract_fit_parsnip() %>%
+  vi()
+rf_workflow %>%
+  extract_fit_parsnip() %>%
+  vip()
+
+# ROC Charts 
+scored_train_rf %>%
+  mutate(model = "train") %>%
+  bind_rows(scored_test_knn %>%
+              mutate(model="test")) %>%
+  group_by(model) %>%
+  roc_curve(response, .pred_1) %>%
+  autoplot()
+
+scored_train_rf %>%
+  conf_mat(response, .pred_class) %>%
+  autoplot(type = "heatmap") +
+  labs(title="Train Confusion Matrix")
+
+scored_test_rf %>%
+  conf_mat(response, .pred_class) %>%
+  autoplot(type = "heatmap") +
+  labs(title="Test Confusion Matrix")
+```
+
+## Random Forest
+
+```{r}
+kfold_splits <- vfold_cv(train, v=5)
+
+rf_model <- rand_forest(trees=tune()) %>%
+  set_engine("ranger", num.threads = 5, max.depth = 10, importance="permutation") %>%
+  set_mode("classification")
+
+rf_wflow <- workflow() %>%
+  add_recipe(recipe) %>%
+  add_model(rf_model)
+
+rf_search_res <- rf_wflow %>% 
+  tune_bayes(
+    resamples = kfold_splits,
+    # Generate five at semi-random to start
+    initial = 5,
+    iter = 50, 
+    metrics = metric_set(yardstick::accuracy, yardstick::roc_auc),
+    control = control_bayes(no_improve = 5, verbose = TRUE)
+  )
+
+```
+## Final Fit Random Forest
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+highest_rf_accuracy <- rf_search_res %>%
+  select_best("accuracy")
+
+highest_rf_accuracy
+
+rf_wflow <- finalize_workflow(
+  rf_wflow, highest_rf_accuracy
+) %>% 
+  fit(train)
+```
+
+
+## Evaluate the Random Forest Model 
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+
+options(yardstick.event_first = FALSE) 
+  # score training
+  predict(rf_wflow, train, type="prob") %>%
+    bind_cols(predict(rf_wflow, train, type="class")) %>%
+    bind_cols(., train)-> scored_train_rf_tune
+
+  # score testing 
+  predict(rf_wflow, test, type="prob") %>%
+      bind_cols(predict(rf_wflow, test, type="class")) %>%
+      bind_cols(., test) -> scored_test_rf_tune 
+
+# Metrics: Train and Test 
+scored_train_rf_tune %>% 
+    metrics(response, .pred_1, estimate = .pred_class) %>%
+    mutate(part="training") %>%
+    bind_rows(scored_test_rf_tune %>% 
+                 metrics(response, .pred_1, estimate = .pred_class) %>%
+                 mutate(part="testing") ) %>%
+    filter(.metric %in% c('accuracy','roc_auc')) %>%
+    pivot_wider(names_from = .metric, values_from=.estimate)
+  
+# Variable Importance
+rf_workflow %>%
+  extract_fit_parsnip() %>%
+  vi()
+rf_workflow %>%
+  extract_fit_parsnip() %>%
+  vip()
+
+# ROC Charts 
+scored_train_rf_tune %>%
+  mutate(model = "train") %>%
+  bind_rows(scored_test_rf_tune %>%
+              mutate(model="test")) %>%
+  group_by(model) %>%
+  roc_curve(response, .pred_1) %>%
+  autoplot()
+
+scored_train_rf_tune %>%
+  conf_mat(response, .pred_class) %>%
+  autoplot(type = "heatmap") +
+  labs(title="Train Confusion Matrix")
+
+scored_test_rf_tune %>%
+  conf_mat(response, .pred_class) %>%
+  autoplot(type = "heatmap") +
+  labs(title="Test Confusion Matrix")
+
+```
+
+## XGBoost Model Buiding
+
+Here we want to TUNE our XGB model using the Bayes method.
+
+```{r}
+xgb_model <- boost_tree(trees = tune(), 
+                        learn_rate = tune(),
+                        tree_depth = tune()) %>%
+  set_engine("xgboost",
+             importance="permutation") %>%
+  set_mode("classification")
+
+xgb_wflow <- workflow() %>%
+  add_recipe(recipe) %>%
+  add_model(xgb_model)
+
+xgb_search_res <- xgb_wflow %>% 
+  tune_bayes(
+    resamples = kfold_splits,
+    # Generate five at semi-random to start
+    initial = 5,
+    iter = 50, 
+    metrics = metric_set(yardstick::accuracy, yardstick::roc_auc),
+    control = control_bayes(no_improve = 5, verbose = TRUE)
+  )
+```
+
+## Final Fit XGB
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+highest_xgb_accuracy <- xgb_search_res %>%
+  select_best("accuracy")
+
+highest_xgb_accuracy
+
+xgb_wflow <- finalize_workflow(
+  xgb_wflow, highest_xgb_accuracy
+) %>% 
+  fit(train)
+```
+
+## Evaluate the XGBoost Model 
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+options(yardstick.event_first = FALSE) 
+  # score training
+  predict(xgb_wflow, train, type="prob") %>%
+    bind_cols(predict(xgb_wflow, train, type="class")) %>%
+    bind_cols(., train) -> scored_train_xgb
+
+  # score testing 
+  predict(xgb_wflow, test, type="prob") %>%
+      bind_cols(predict(xgb_wflow, test, type="class")) %>%
+      bind_cols(., test) -> scored_test_xgb 
+
+# Metrics: Train and Test 
+scored_train_xgb %>% 
+    metrics(response, .pred_1, estimate = .pred_class) %>%
+    mutate(part="training") %>%
+    bind_rows(scored_test_xgb %>% 
+                 metrics(response, .pred_1, estimate = .pred_class) %>%
+                 mutate(part="testing") ) %>%
+    filter(.metric %in% c('accuracy','roc_auc')) %>%
+    pivot_wider(names_from = .metric, values_from=.estimate)
+  
+# Variable Importance
+xgb_wflow %>%
+  extract_fit_parsnip() %>%
+  vi()
+xgb_wflow %>%
+  extract_fit_parsnip() %>%
+  vip()
+
+# ROC Charts 
+scored_train_xgb %>%
+  mutate(model = "train") %>%
+  bind_rows(scored_test_xgb %>%
+              mutate(model="test")) %>%
+  group_by(model) %>%
+  roc_curve(response, .pred_1) %>%
+  autoplot()
+
+scored_train_xgb %>%
+  conf_mat(response, .pred_class) %>%
+  autoplot(type = "heatmap") +
+  labs(title="Train Confusion Matrix")
+
+scored_test_xgb %>%
+  conf_mat(response, .pred_class) %>%
+  autoplot(type = "heatmap") +
+  labs(title="Test Confusion Matrix")
+```
+
+## Prediction
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+
+new_customers$cmp1 <- as.factor(new_customers$cmp1)
+new_customers$cmp2 <- as.factor(new_customers$cmp2)
+new_customers$cmp3 <- as.factor(new_customers$cmp3)
+new_customers$cmp4 <- as.factor(new_customers$cmp4)
+new_customers$cmp5 <- as.factor(new_customers$cmp5)
+
+
+prediction <- predict(xgb_wflow, new_customers, type = "prob") %>%
+  bind_cols(predict(xgb_wflow, new_customers, type = "class")) %>%
+  bind_cols(new_customers) %>%
+  dplyr:::select.data.frame(id, .pred_1, response = .pred_class)
+
+head(prediction) 
+  
+prediction %>% write_csv("project_3_Xuhui Ying.csv")
+
+```
